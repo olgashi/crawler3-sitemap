@@ -791,7 +791,7 @@ class ContentExtractor:
                 author = metadata.author if metadata and metadata.author else ', '.join(article.authors) if article.authors else ''
 
                 # There was a problem with extracting lead paragraph only in cash.ch
-                if 'www.cash.ch' in url:
+                if 'www.cash.ch' in url or 'handelszeitung.ch' in url:
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(response.text, 'html.parser')
                     lead_content = self._extract_lead_content(soup)
