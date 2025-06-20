@@ -30,7 +30,7 @@ load_dotenv()
 # Configuration
 HISTORICAL_MODE = False  # Set to True for initial historical scraping
 TEST_MODE = False  # Set to True for testing without database writes
-PROXY_TIMEOUT = 30
+PROXY_TIMEOUT = 60
 
 # Setup logging
 logging.basicConfig(
