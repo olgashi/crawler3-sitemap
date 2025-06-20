@@ -105,7 +105,7 @@ def get_latest_date_from_es(source_title: str) -> Optional[datetime]:
         # For now, we'll use a mock function
         if TEST_MODE:
             # In test mode, return a date from 1 week ago for testing
-            mock_date = datetime.now() - timedelta(days=7)
+            mock_date = datetime.now().replace(tzinfo=None) - timedelta(days=7)
             logger.info(f"TEST MODE: Using mock ES date {mock_date.date()} for {source_title}")
             return mock_date
         else:
@@ -264,7 +264,7 @@ class StandardSitemapHandler(SitemapHandler):
         
         if HISTORICAL_MODE:
             # In historical mode, get last 6 months
-            cutoff_date = datetime.now() - timedelta(days=180)
+            cutoff_date = datetime.now().replace(tzinfo=None) - timedelta(days=180)
             logger.info(f"Historical mode: filtering URLs since {cutoff_date.date()}")
         else:
             # In incremental mode, only get URLs newer than latest in ES
@@ -273,7 +273,7 @@ class StandardSitemapHandler(SitemapHandler):
                 logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
             else:
                 # If no date from ES, get last 7 days
-                cutoff_date = datetime.now() - timedelta(days=7)
+                cutoff_date = datetime.now().replace(tzinfo=None) - timedelta(days=7)
                 logger.info(f"No ES date found: filtering URLs from last 7 days since {cutoff_date.date()}")
         
         # Filter URLs by lastmod date
@@ -307,7 +307,7 @@ class DateDynamicSitemapHandler(SitemapHandler):
         fallback_months = source_config.get('fallback_months', 2)
         
         # Generate date parameters for sitemap fetching
-        current_date = datetime.now()
+        current_date = datetime.now().replace(tzinfo=None)
         dates_to_try = []
         
         if HISTORICAL_MODE:
@@ -369,7 +369,7 @@ class DateDynamicSitemapHandler(SitemapHandler):
         
         if HISTORICAL_MODE:
             # In historical mode, get last 6 months
-            cutoff_date = datetime.now() - timedelta(days=180)
+            cutoff_date = datetime.now().replace(tzinfo=None) - timedelta(days=180)
             logger.info(f"Historical mode: filtering URLs since {cutoff_date.date()}")
         else:
             # In incremental mode, only get URLs newer than latest in ES
@@ -378,7 +378,7 @@ class DateDynamicSitemapHandler(SitemapHandler):
                 logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
             else:
                 # If no date from ES, get last 7 days
-                cutoff_date = datetime.now() - timedelta(days=7)
+                cutoff_date = datetime.now().replace(tzinfo=None) - timedelta(days=7)
                 logger.info(f"No ES date found: filtering URLs from last 7 days since {cutoff_date.date()}")
         
         # Filter URLs by lastmod date
@@ -478,7 +478,7 @@ class JetpackTableHandler(SitemapHandler):
         
         if HISTORICAL_MODE:
             # In historical mode, get last 6 months
-            cutoff_date = datetime.now() - timedelta(days=180)
+            cutoff_date = datetime.now().replace(tzinfo=None) - timedelta(days=180)
             logger.info(f"Historical mode: filtering URLs since {cutoff_date.date()}")
         else:
             # In incremental mode, only get URLs newer than latest in ES
@@ -487,7 +487,7 @@ class JetpackTableHandler(SitemapHandler):
                 logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
             else:
                 # If no date from ES, get last 7 days
-                cutoff_date = datetime.now() - timedelta(days=7)
+                cutoff_date = datetime.now().replace(tzinfo=None) - timedelta(days=7)
                 logger.info(f"No ES date found: filtering URLs from last 7 days since {cutoff_date.date()}")
         
         # Filter URLs by date
