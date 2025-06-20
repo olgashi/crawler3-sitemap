@@ -306,7 +306,7 @@ class DateDynamicSitemapHandler(SitemapHandler):
         pattern = source_config.get('sitemap_pattern', '')
         fallback_months = source_config.get('fallback_months', 2)
         
-        # Generate date parameters
+        # Generate date parameters for sitemap fetching
         current_date = datetime.now()
         dates_to_try = []
         
@@ -321,6 +321,7 @@ class DateDynamicSitemapHandler(SitemapHandler):
                 date = current_date - timedelta(days=30 * i)
                 dates_to_try.append(date.strftime('%Y_%m'))
         
+        all_urls = []
         for date_param in dates_to_try:
             sitemap_url = pattern.format(YYYY_MM=date_param)
             
@@ -342,13 +343,64 @@ class DateDynamicSitemapHandler(SitemapHandler):
                         lastmod = lastmod_elem.text if lastmod_elem is not None else datetime.now().isoformat()
                         month_urls.append((url, lastmod))
                 
-                urls.extend(month_urls)
+                all_urls.extend(month_urls)
                 logger.info(f"Found {len(month_urls)} URLs in {sitemap_url}")
                 
             except Exception as e:
                 logger.error(f"Error processing date-dynamic sitemap {sitemap_url}: {e}")
         
-        return urls
+        logger.info(f"Found {len(all_urls)} total URLs from all dynamic sitemaps")
+        
+        # Filter by lastmod date against ES data
+        filtered_urls = self._filter_by_lastmod_date(all_urls, source_config)
+        
+        logger.info(f"After lastmod filtering: {len(filtered_urls)} URLs for processing")
+        
+        return filtered_urls
+    
+    def _filter_by_lastmod_date(self, all_urls: List[Tuple[str, str]], source_config: Dict) -> List[Tuple[str, str]]:
+        """Filter URLs by lastmod date against ES data"""
+        if not all_urls:
+            return []
+        
+        # Get the latest publication date from Elasticsearch
+        source_title = source_config.get('source_title', '')
+        latest_es_date = get_latest_date_from_es(source_title=source_title)
+        
+        if HISTORICAL_MODE:
+            # In historical mode, get last 6 months
+            cutoff_date = datetime.now() - timedelta(days=180)
+            logger.info(f"Historical mode: filtering URLs since {cutoff_date.date()}")
+        else:
+            # In incremental mode, only get URLs newer than latest in ES
+            if latest_es_date:
+                cutoff_date = latest_es_date
+                logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
+            else:
+                # If no date from ES, get last 7 days
+                cutoff_date = datetime.now() - timedelta(days=7)
+                logger.info(f"No ES date found: filtering URLs from last 7 days since {cutoff_date.date()}")
+        
+        # Filter URLs by lastmod date
+        filtered_urls = []
+        for url, lastmod in all_urls:
+            try:
+                # Parse lastmod date
+                if lastmod:
+                    lastmod_dt = datetime.fromisoformat(lastmod.replace('Z', '+00:00').replace('+00:00', ''))
+                    if lastmod_dt >= cutoff_date:
+                        filtered_urls.append((url, lastmod))
+                else:
+                    # If no lastmod, include it (assume it's new)
+                    filtered_urls.append((url, lastmod))
+            except ValueError:
+                # If we can't parse the date, include the URL
+                filtered_urls.append((url, lastmod))
+        
+        # Sort by date (newest first)
+        filtered_urls.sort(key=lambda x: x[1] or '', reverse=True)
+        
+        return filtered_urls
 
 class JetpackTableHandler(SitemapHandler):
     """Handler for Jetpack-style XML sitemaps with date filtering"""
@@ -421,8 +473,8 @@ class JetpackTableHandler(SitemapHandler):
             return []
         
         # Get the latest publication date from Elasticsearch
-        source_name = source_config.get('name', '')
-        latest_es_date = self._get_latest_date_from_es(source_name)
+        source_title = source_config.get('source_title', '')
+        latest_es_date = get_latest_date_from_es(source_title=source_title)
         
         if HISTORICAL_MODE:
             # In historical mode, get last 6 months
