@@ -111,14 +111,10 @@ def get_latest_date_from_es(source_title: str) -> Optional[datetime]:
         else:
             try:
                 es = Elasticsearch(
-                    [f'http://{ELASTICSEARCH_LB_IP}:9200'],
+                    f"http://{ELASTICSEARCH_LB_IP}:9200",
                     request_timeout=30,
                     retry_on_timeout=True,
-                    max_retries=3,
-                    sniff_on_connection_fail=True,
-                    sniff_timeout=60,
-                    sniffer_timeout=60,
-                    retry_on_status=(502, 503, 504),
+                    max_retries=3
                 )
             except Exception as e:
                 logger.error(f"Unable to connect to elasticsearch lb, error: {e}")
