@@ -136,7 +136,10 @@ def get_latest_date_from_es(source_title: str) -> Optional[datetime]:
 
                 hits = response.get("hits", {}).get("hits", [])
                 if hits:
-                    return hits[0]["_source"]["pub_date"]
+                    pub_date_str = hits[0]["_source"]["pub_date"]
+                    # Parse the string into a timezone-naive datetime
+                    pub_date_dt = datetime.fromisoformat(pub_date_str.replace('Z', '')).replace(tzinfo=None)
+                    return pub_date_dt
                 return None
             except Exception as e:
                 print(f"Error querying Elasticsearch: {e}")
@@ -257,6 +260,7 @@ class StandardSitemapHandler(SitemapHandler):
         # Get the latest publication date from Elasticsearch
         source_title = source_config.get('source_title', '')
         latest_es_date = get_latest_date_from_es(source_title=source_title)
+        logger.info(f"Got date from ES: {latest_es_date}")
         
         if HISTORICAL_MODE:
             # In historical mode, get last 6 months
