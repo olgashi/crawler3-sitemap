@@ -30,7 +30,7 @@ load_dotenv()
 
 # Configuration
 HISTORICAL_MODE = False  # Set to True for initial historical scraping
-TEST_MODE = False  # Set to True for testing without database writes
+TEST_MODE = True  # Set to True for testing without database writes
 PROXY_TIMEOUT = 60
 
 ELASTICSEARCH_LB_IP = os.environ.get('ELASTICSEARCH_LB_IP', '10.0.0.12')
@@ -767,7 +767,7 @@ class ContentExtractor:
                                         include_comments=False,
                                         include_tables=True,
                                         include_formatting=False,
-                                        favor_precision=True)
+                                        favor_precision=False)
             
             # Extract metadata with trafilatura
             metadata = trafilatura.extract_metadata(response.text)
