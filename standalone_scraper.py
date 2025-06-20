@@ -1169,7 +1169,7 @@ class NewsScraperStandalone:
                 return {'success': False, 'error': 'No articles found'}
             
 
-            if not HISTORICAL_MODE and article_urls:
+            if not HISTORICAL_MODE and article_urls and not TEST_MODE:
                 # Check which URLs already exist to avoid reprocessing
                 source_title = source_config.get('source_title', '')
                 url_list = [url for url, _ in article_urls]
