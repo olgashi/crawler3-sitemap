@@ -18,6 +18,7 @@ from openai import OpenAI
 import openai
 import requests
 import time
+from elasticsearch import Elasticsearch
 import nltk
 from nltk.sentiment import SentimentIntensityAnalyzer
 nltk.download('vader_lexicon')
@@ -31,6 +32,8 @@ load_dotenv()
 HISTORICAL_MODE = True  # Set to True for initial historical scraping
 TEST_MODE = False  # Set to True for testing without database writes
 PROXY_TIMEOUT = 60
+
+ELASTICSEARCH_LB_IP = os.environ.get('ELASTICSEARCH_LB_IP', '10.0.0.12')
 
 # Setup logging
 logging.basicConfig(
@@ -94,6 +97,58 @@ Example: "Tesla Unveils New Electric Truck" → {"keywords":"tesla electric truc
         except Exception as e:
             print(f"An unexpected error occurred: {str(e)}")
             return None
+        
+def get_latest_date_from_es(self, source_title: str) -> Optional[datetime]:
+    """Get latest publication date from Elasticsearch for this source"""
+    try:
+        # This is a placeholder - you'll need to implement the actual ES query
+        # For now, we'll use a mock function
+        if TEST_MODE:
+            # In test mode, return a date from 1 week ago for testing
+            mock_date = datetime.now() - timedelta(days=7)
+            logger.info(f"TEST MODE: Using mock ES date {mock_date.date()} for {source_title}")
+            return mock_date
+        else:
+            try:
+                es = Elasticsearch(
+                    [f'http://{ELASTICSEARCH_LB_IP}:9200'],  # Single endpoint through load balancer
+                    retry_on_timeout=True,
+                    max_retries=3,
+                    timeout=30,
+                    sniff_on_connection_fail=True,
+                    sniff_timeout=60,
+                    sniffer_timeout=60,
+                    retry_on_status=(502, 503, 504)
+                )
+            except Exception as e:
+                logger.error(f"Unable to connect to elasticsearch lb, error: {e}")
+                raise
+            try:
+                response = es.search(
+                    index='articles',
+                    size=1,
+                    query={
+                        "term": {
+                            "channel_title.keyword": source_title
+                        }
+                    },
+                    sort=[
+                        {"pub_date": {"order": "desc"}}
+                    ],
+                    _source=["pub_date"]
+                )
+
+                hits = response.get("hits", {}).get("hits", [])
+                if hits:
+                    return hits[0]["_source"]["pub_date"]
+                return None
+            except Exception as e:
+                print(f"Error querying Elasticsearch: {e}")
+                return None
+            
+    except Exception as e:
+        logger.error(f"Error getting latest date from ES for {source_title}: {e}")
+        return None
 
 class ConfigManager:
     """Manages configuration loading and source filtering"""
@@ -169,14 +224,13 @@ class StandardSitemapHandler(SitemapHandler):
         for sitemap_url in source_config.get('sitemap_urls', []):
             try:
                 logger.info(f"Fetching sitemap: {sitemap_url}")
-                response = self._fetch_with_fallback(sitemap_url, PROXY_TIMEOUT)
+                response = self.session.get(sitemap_url, timeout=PROXY_TIMEOUT)
                 response.raise_for_status()
                 
                 root = ET.fromstring(response.content)
-                
-                # Handle different XML namespaces
                 namespaces = {'': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
                 
+                all_urls = []
                 for url_elem in root.findall('.//url', namespaces):
                     loc_elem = url_elem.find('loc', namespaces)
                     lastmod_elem = url_elem.find('lastmod', namespaces)
@@ -184,14 +238,64 @@ class StandardSitemapHandler(SitemapHandler):
                     if loc_elem is not None:
                         url = loc_elem.text
                         lastmod = lastmod_elem.text if lastmod_elem is not None else datetime.now().isoformat()
-                        urls.append((url, lastmod))
+                        all_urls.append((url, lastmod))
                 
-                logger.info(f"Found {len(urls)} URLs in sitemap: {sitemap_url}")
+                logger.info(f"Found {len(all_urls)} total URLs in sitemap: {sitemap_url}")
+                
+                # Filter by date like JetpackTableHandler does
+                filtered_urls = self._filter_by_date(all_urls, source_config)
+                urls.extend(filtered_urls)
+                
+                logger.info(f"After date filtering: {len(filtered_urls)} URLs for processing")
                 
             except Exception as e:
                 logger.error(f"Error processing sitemap {sitemap_url}: {e}")
         
         return urls
+    
+    def _filter_by_date(self, all_urls: List[Tuple[str, str]], source_config: Dict) -> List[Tuple[str, str]]:
+        """Filter URLs by lastmod date"""
+        if not all_urls:
+            return []
+        
+        # Get the latest publication date from Elasticsearch
+        source_name = source_config.get('name', '')
+        latest_es_date = get_latest_date_from_es(source_name)
+        
+        if HISTORICAL_MODE:
+            # In historical mode, get last 6 months
+            cutoff_date = datetime.now() - timedelta(days=180)
+            logger.info(f"Historical mode: filtering URLs since {cutoff_date.date()}")
+        else:
+            # In incremental mode, only get URLs newer than latest in ES
+            if latest_es_date:
+                cutoff_date = latest_es_date
+                logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
+            else:
+                # If no date from ES, get last 7 days
+                cutoff_date = datetime.now() - timedelta(days=7)
+                logger.info(f"No ES date found: filtering URLs from last 7 days since {cutoff_date.date()}")
+        
+        # Filter URLs by lastmod date
+        filtered_urls = []
+        for url, lastmod in all_urls:
+            try:
+                # Parse lastmod date
+                if lastmod:
+                    lastmod_dt = datetime.fromisoformat(lastmod.replace('Z', '+00:00').replace('+00:00', ''))
+                    if lastmod_dt >= cutoff_date:
+                        filtered_urls.append((url, lastmod))
+                else:
+                    # If no lastmod, include it (assume it's new)
+                    filtered_urls.append((url, lastmod))
+            except ValueError:
+                # If we can't parse the date, include the URL
+                filtered_urls.append((url, lastmod))
+        
+        # Sort by date (newest first)
+        filtered_urls.sort(key=lambda x: x[1] or '', reverse=True)
+        
+        return filtered_urls
 
 class DateDynamicSitemapHandler(SitemapHandler):
     """Handler for date-dynamic sitemaps"""
@@ -345,28 +449,7 @@ class JetpackTableHandler(SitemapHandler):
         
         return filtered_urls
     
-    def _get_latest_date_from_es(self, source_name: str) -> Optional[datetime]:
-        """Get latest publication date from Elasticsearch for this source"""
-        try:
-            # This is a placeholder - you'll need to implement the actual ES query
-            # For now, we'll use a mock function
-            if TEST_MODE:
-                # In test mode, return a date from 1 week ago for testing
-                mock_date = datetime.now() - timedelta(days=7)
-                logger.info(f"TEST MODE: Using mock ES date {mock_date.date()} for {source_name}")
-                return mock_date
-            else:
-                # In production, you would call your actual ES function here
-                # latest_date_str = get_latest_article_date(source_name)
-                # return datetime.fromisoformat(latest_date_str.replace('Z', '+00:00'))
-                
-                # For now, return None to use fallback logic
-                logger.warning(f"ES integration not implemented - using fallback date logic for {source_name}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error getting latest date from ES for {source_name}: {e}")
-            return None
+
 
 class CategoryPageHandler(SitemapHandler):
     """Handler for category pages without sitemaps"""
@@ -374,7 +457,14 @@ class CategoryPageHandler(SitemapHandler):
     def get_article_urls(self, source_config: Dict) -> List[Tuple[str, str]]:
         """Extract URLs from category listing pages"""
         urls = []
-        max_pages = source_config.get('max_pages', 3)
+        
+        # Adjust max_pages based on mode
+        if HISTORICAL_MODE:
+            max_pages = source_config.get('max_pages', 3)
+        else:
+            # Incremental mode: only check first 1-2 pages
+            max_pages = min(source_config.get('max_pages', 3), 2)
+            logger.info(f"Incremental mode: limiting to {max_pages} pages per category")
         
         for category_url in source_config.get('category_urls', []):
             page_urls = self._extract_from_category_page(category_url, max_pages)
@@ -427,6 +517,7 @@ class CategoryPageHandler(SitemapHandler):
                 
                 # If no articles found, stop pagination
                 if not page_urls:
+                    logger.info("No new articles found, stopping pagination early")
                     break
                     
             except Exception as e:
@@ -1179,56 +1270,75 @@ def main():
     
     if TEST_MODE:
         print("🧪 Running in TEST MODE - no database writes")
-    
-    # Initialize scraper
-    scraper = NewsScraperStandalone()
-    
-    # Interactive mode
-    print("\nChoose an option:")
-    print("1. Scrape a specific source")
-    print("2. Scrape all sources")
-    print("3. Test sitemap only (no content extraction)")
-    
-    choice = input("\nEnter choice (1-3): ").strip()
-    
-    if choice == '1':
-        source_name = input("Enter source name: ").strip()
-        max_articles = input("Max articles (press Enter for all): ").strip()
-        max_articles = int(max_articles) if max_articles else None
         
-        result = scraper.scrape_source(source_name, max_articles)
+        # Interactive mode for testing
+        scraper = NewsScraperStandalone()
         
-        if result['success']:
-            print(f"\n✅ Success! Extracted {result['articles_extracted']} articles")
-        else:
-            print(f"\n❌ Failed: {result['error']}")
-    
-    elif choice == '2':
-        shard_color = input("Enter shard color (default: red): ").strip() or 'red'
-        max_articles = input("Max articles per source (press Enter for all): ").strip()
-        max_articles = int(max_articles) if max_articles else None
+        print("\nChoose an option:")
+        print("1. Scrape a specific source")
+        print("2. Scrape all sources")
+        print("3. Test sitemap only (no content extraction)")
         
-        results = scraper.scrape_all_sources(shard_color, max_articles)
-        print(f"\n✅ Completed! Total extracted: {results['total_extracted']} articles")
-    
-    elif choice == '3':
-        # Test sitemap only
-        source_name = input("Enter source name: ").strip()
-        source_config = scraper.config_manager.get_source_by_name(source_name)
+        choice = input("\nEnter choice (1-3): ").strip()
         
-        if source_config:
-            sitemap_type = source_config.get('sitemap_type', 'standard')
-            handler = SitemapHandlerFactory.create_handler(sitemap_type, scraper.session)
-            urls = handler.get_article_urls(source_config)
+        if choice == '1':
+            source_name = input("Enter source name: ").strip()
+            max_articles = input("Max articles (press Enter for all): ").strip()
+            max_articles = int(max_articles) if max_articles else None
             
-            print(f"\n✅ Found {len(urls)} URLs in sitemap")
-            for i, (url, lastmod) in enumerate(urls[:5]):  # Show first 5
-                print(f"{i+1}. {url}")
+            result = scraper.scrape_source(source_name, max_articles)
+            
+            if result['success']:
+                print(f"\n✅ Success! Extracted {result['articles_extracted']} articles")
+            else:
+                print(f"\n❌ Failed: {result['error']}")
+        
+        elif choice == '2':
+            shard_color = input("Enter shard color (default: red): ").strip() or 'red'
+            max_articles = input("Max articles per source (press Enter for all): ").strip()
+            max_articles = int(max_articles) if max_articles else None
+            
+            results = scraper.scrape_all_sources(shard_color, max_articles)
+            print(f"\n✅ Completed! Total extracted: {results['total_extracted']} articles")
+        
+        elif choice == '3':
+            # Test sitemap only
+            source_name = input("Enter source name: ").strip()
+            source_config = scraper.config_manager.get_source_by_name(source_name)
+            
+            if source_config:
+                sitemap_type = source_config.get('sitemap_type', 'standard')
+                handler = SitemapHandlerFactory.create_handler(sitemap_type, scraper.session)
+                urls = handler.get_article_urls(source_config)
+                
+                print(f"\n✅ Found {len(urls)} URLs in sitemap")
+                for i, (url, lastmod) in enumerate(urls[:5]):  # Show first 5
+                    print(f"{i+1}. {url}")
+            else:
+                print(f"❌ Source {source_name} not found")
+        
         else:
-            print(f"❌ Source {source_name} not found")
+            print("❌ Invalid choice")
     
     else:
-        print("❌ Invalid choice")
+        # Production mode - run all sources automatically
+        print("🔄 Running in PRODUCTION MODE")
+        
+        # Add random delay for less predictable timing
+        import random
+        delay = random.randint(0, 600)  # 0-10 minutes
+        logger.info(f"Adding random delay of {delay} seconds for unpredictable timing")
+        time.sleep(delay)
+        
+        # Initialize scraper and run all sources
+        scraper = NewsScraperStandalone()
+        shard_color = os.getenv('SHARD_COLOR', 'red')
+        
+        logger.info(f"Starting automated scraping for shard: {shard_color}")
+        results = scraper.scrape_all_sources(shard_color)
+        
+        logger.info(f"Scraping completed! Total extracted: {results['total_extracted']} articles")
+        print(f"✅ Scraping completed! Total extracted: {results['total_extracted']} articles")
 
 if __name__ == "__main__":
     main()
