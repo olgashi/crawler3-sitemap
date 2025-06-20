@@ -98,7 +98,7 @@ Example: "Tesla Unveils New Electric Truck" → {"keywords":"tesla electric truc
             print(f"An unexpected error occurred: {str(e)}")
             return None
         
-def get_latest_date_from_es(self, source_title: str) -> Optional[datetime]:
+def get_latest_date_from_es(source_title: str) -> Optional[datetime]:
     """Get latest publication date from Elasticsearch for this source"""
     try:
         # This is a placeholder - you'll need to implement the actual ES query
@@ -259,8 +259,8 @@ class StandardSitemapHandler(SitemapHandler):
             return []
         
         # Get the latest publication date from Elasticsearch
-        source_name = source_config.get('name', '')
-        latest_es_date = get_latest_date_from_es(source_name)
+        source_title = source_config.get('source_title', '')
+        latest_es_date = get_latest_date_from_es(source_title=source_title)
         
         if HISTORICAL_MODE:
             # In historical mode, get last 6 months
