@@ -1,0 +1,71 @@
+{
+  "sources": [
+    {
+      "name": "regal_at",
+      "source_title": "REGAL",
+      "source_url": "https://regal.at",
+      "sitemap_type": "standard",
+      "sitemap_urls": ["https://regal.at/sitemap/news.xml"],
+      "language": "de",
+      "shard_color": "red",
+      "enabled": true,
+      "id": "regal-at",
+      "source_country": "AT"
+    },
+    {
+      "name": "cash_ch",
+      "source_title": "Cash",
+      "source_url": "https://www.cash.ch",
+      "sitemap_type": "date_dynamic",
+      "sitemap_pattern": "https://www.cash.ch/sitemap.xml?f={YYYY_MM}",
+      "fallback_months": 0,
+      "language": "de",
+      "shard_color": "red",
+      "enabled": true,
+      "id": "cash-ch",
+      "source_country": "CH"
+    },
+    {
+      "name": "retail_at",
+      "source_title": "Retail",
+      "source_url": "https://retail.at",
+      "sitemap_type": "jetpack_table",
+      "sitemap_urls": ["https://retail.at/sitemap-1.xml"],
+      "language": "de",
+      "shard_color": "red",
+      "enabled": true,
+      "id": "retail-at",
+      "source_country": "AT"
+    },
+    {
+      "name": "handelszeitung_ch",
+      "source_title": "Handelszeitung",
+      "source_url": "https://www.handelszeitung.ch",
+      "sitemap_type": "date_dynamic",
+      "sitemap_pattern": "https://www.handelszeitung.ch/sitemap.xml?f={YYYY_MM}",
+      "fallback_months": 0,
+      "language": "de",
+      "shard_color": "red",
+      "enabled": true,
+      "id": "handelszeitung-ch",
+      "source_country": "CH"
+    },
+    {
+      "name": "etailment_de",
+      "source_title": "Etailment",
+      "source_url": "https://etailment.de",
+      "sitemap_type": "category_pages",
+      "category_urls": [
+        "https://etailment.de/news/stories/",
+        "https://etailment.de/news/start-ups/",
+        "https://etailment.de/news/deep-dive/"
+      ],
+      "max_pages": 4,
+      "language": "de",
+      "shard_color": "red",
+      "enabled": true,
+      "id": "etailment-de",
+      "source_country": "DE"
+    }
+  ]
+}
