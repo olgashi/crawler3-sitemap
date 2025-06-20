@@ -278,7 +278,7 @@ class StandardSitemapHandler(SitemapHandler):
             try:
                 # Parse lastmod date
                 if lastmod:
-                    lastmod_dt = datetime.fromisoformat(lastmod.replace('Z', '+00:00').replace('+00:00', ''))
+                    lastmod_dt = datetime.fromisoformat(lastmod.replace('Z', '+00:00').replace('+00:00', '')).replace(tzinfo=None)
                     if lastmod_dt >= cutoff_date:
                         filtered_urls.append((url, lastmod))
                 else:
@@ -383,7 +383,7 @@ class DateDynamicSitemapHandler(SitemapHandler):
             try:
                 # Parse lastmod date
                 if lastmod:
-                    lastmod_dt = datetime.fromisoformat(lastmod.replace('Z', '+00:00').replace('+00:00', ''))
+                    lastmod_dt = datetime.fromisoformat(lastmod.replace('Z', '+00:00').replace('+00:00', '')).replace(tzinfo=None)
                     if lastmod_dt >= cutoff_date:
                         filtered_urls.append((url, lastmod))
                 else:
