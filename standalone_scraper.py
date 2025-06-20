@@ -1326,7 +1326,7 @@ def main():
         
         # Add random delay for less predictable timing
         import random
-        delay = random.randint(0, 600)  # 0-10 minutes
+        delay = random.randint(0, 60)  # 0-10 minutes
         logger.info(f"Adding random delay of {delay} seconds for unpredictable timing")
         time.sleep(delay)
         
