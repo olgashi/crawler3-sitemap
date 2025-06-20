@@ -148,6 +148,63 @@ def get_latest_date_from_es(source_title: str) -> Optional[datetime]:
     except Exception as e:
         logger.error(f"Error getting latest date from ES for {source_title}: {e}")
         return None
+    
+def get_missing_article_urls(
+    urls: List[str],
+    source_title: str,
+) -> List[str]:
+    """
+    Check which article URLs do NOT exist in Elasticsearch for a given source.
+
+    Args:
+        urls (List[str]): List of article URLs to check.
+        source_title (str): The source/channel_title to filter by.
+        index_name (str): The Elasticsearch index name.
+
+    Returns:
+        List[str]: URLs not found in ES for the given source.
+    """
+    if not urls:
+        return []
+
+    # Elasticsearch allows a maximum of 10,000 terms in a terms query by default
+    if len(urls) > 10000:
+        raise ValueError("Too many URLs — split into batches under 10,000")
+    
+    try:
+        es = Elasticsearch(
+            f"http://{ELASTICSEARCH_LB_IP}:9200",
+            request_timeout=30,
+            retry_on_timeout=True,
+            max_retries=3
+        )
+    except Exception as e:
+        logger.error(f"Unable to connect to elasticsearch lb, error: {e}")
+        raise
+
+    try:
+        response = es.search(
+            index="articles",
+            size=10000,
+            query={
+                "bool": {
+                    "must": [
+                        {"term": {"channel_title.keyword": source_title}},
+                        {"terms": {"link.keyword": urls}}
+                    ]
+                }
+            },
+            _source=["link"]
+        )
+
+        found_urls = {hit["_source"]["link"] for hit in response["hits"]["hits"]}
+        missing_urls = [url for url in urls if url not in found_urls]
+
+        return missing_urls
+
+    except Exception as e:
+        print(f"Error querying Elasticsearch: {e}")
+        raise
 
 class ConfigManager:
     """Manages configuration loading and source filtering"""
@@ -269,7 +326,7 @@ class StandardSitemapHandler(SitemapHandler):
         else:
             # In incremental mode, only get URLs newer than latest in ES
             if latest_es_date:
-                cutoff_date = latest_es_date
+                cutoff_date = (latest_es_date - timedelta(days=1)).replace(tzinfo=None)
                 logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
             else:
                 # If no date from ES, get last 7 days
@@ -374,7 +431,7 @@ class DateDynamicSitemapHandler(SitemapHandler):
         else:
             # In incremental mode, only get URLs newer than latest in ES
             if latest_es_date:
-                cutoff_date = latest_es_date
+                cutoff_date = (latest_es_date - timedelta(days=1)).replace(tzinfo=None)
                 logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
             else:
                 # If no date from ES, get last 7 days
@@ -483,7 +540,7 @@ class JetpackTableHandler(SitemapHandler):
         else:
             # In incremental mode, only get URLs newer than latest in ES
             if latest_es_date:
-                cutoff_date = latest_es_date
+                cutoff_date = (latest_es_date - timedelta(days=1)).replace(tzinfo=None)
                 logger.info(f"Incremental mode: filtering URLs newer than {cutoff_date.date()}")
             else:
                 # If no date from ES, get last 7 days
@@ -1110,6 +1167,15 @@ class NewsScraperStandalone:
             if not article_urls:
                 logger.warning(f"No articles found for source {source_name}")
                 return {'success': False, 'error': 'No articles found'}
+            
+
+            if not HISTORICAL_MODE and article_urls:
+                # Check which URLs already exist to avoid reprocessing
+                source_title = source_config.get('source_title', '')
+                url_list = [url for url, _ in article_urls]
+                new_url_list = get_missing_article_urls(urls=url_list, source_title=source_title)
+                article_urls = [(url, lastmod) for url, lastmod in article_urls if url in new_url_list]
+                logger.info(f"After existence check: {len(article_urls)} URLs to process")
             
             # Limit articles if specified
             if max_articles:
