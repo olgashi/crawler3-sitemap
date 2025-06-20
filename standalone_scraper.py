@@ -190,7 +190,7 @@ def get_missing_article_urls(
                 "bool": {
                     "must": [
                         {"term": {"channel_title.keyword": source_title}},
-                        {"terms": {"link.keyword": urls}}
+                        {"terms": {"link": urls}}
                     ]
                 }
             },
