@@ -1321,7 +1321,7 @@ class NewsScraperStandalone:
                     pub_date = datetime.now()
             except (ValueError, TypeError):
                 pub_date = datetime.now()
-                logger.warning(f"Could not parse pub_date, using current time: {article_data.get('pub_date')}")
+                logger.warning(f"Could not parse pub_date, using current time: {pub_date}")
             
             # Create NewsArticle instance
             news_article = NewsArticle(
