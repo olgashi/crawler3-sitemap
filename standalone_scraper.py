@@ -133,10 +133,31 @@ class SitemapHandler:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        self.session.verify = False
     
     def get_article_urls(self, source_config: Dict) -> List[Tuple[str, str]]:
         """Get article URLs and their last modified dates"""
         raise NotImplementedError
+    def _fetch_with_fallback(self, url: str, timeout: int = 30) -> requests.Response:
+        """Fetch URL with proxy fallback"""
+        try:
+            # Try with proxy first
+            response = self.session.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response
+        except (requests.exceptions.SSLError, requests.exceptions.ProxyError, 
+                requests.exceptions.ConnectionError) as e:
+            logger.warning(f"Proxy failed for {url}: {e}")
+            logger.info(f"Retrying without proxy...")
+            
+            # Create session without proxy
+            fallback_session = requests.Session()
+            fallback_session.headers.update(self.session.headers)
+            fallback_session.verify = False
+            
+            response = fallback_session.get(url, timeout=timeout)
+            response.raise_for_status()
+            return response
 
 class StandardSitemapHandler(SitemapHandler):
     """Handler for standard XML sitemaps"""
@@ -148,7 +169,7 @@ class StandardSitemapHandler(SitemapHandler):
         for sitemap_url in source_config.get('sitemap_urls', []):
             try:
                 logger.info(f"Fetching sitemap: {sitemap_url}")
-                response = self.session.get(sitemap_url, timeout=PROXY_TIMEOUT)
+                response = self._fetch_with_fallback(sitemap_url, PROXY_TIMEOUT)
                 response.raise_for_status()
                 
                 root = ET.fromstring(response.content)
