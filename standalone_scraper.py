@@ -42,6 +42,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def extract_date_from_url(url: str) -> Optional[datetime]:
+    """Extract date from URL path like /2025/06/03/"""
+    try:
+        # Look for pattern like /YYYY/MM/DD/ in URL
+        import re
+        pattern = r'/(\d{4})/(\d{2})/(\d{2})/'
+        match = re.search(pattern, url)
+        
+        if match:
+            year, month, day = match.groups()
+            return datetime(int(year), int(month), int(day))
+        
+        return None
+    except Exception as e:
+        logger.warning(f"Could not extract date from URL {url}: {e}")
+        return None
+
 def analyze_sentiment(text: str) -> dict[str, float]:
     """
 
@@ -626,7 +643,7 @@ class JetpackTableHandler(SitemapHandler):
                         lastmod = lastmod_elem.text if lastmod_elem is not None else datetime.now().isoformat()
                         
                         # Extract date from URL path (format: /2025/06/03/)
-                        date_from_url = self._extract_date_from_url(url)
+                        date_from_url = extract_date_from_url(url)
                         if date_from_url:
                             all_urls.append((url, lastmod, date_from_url))
                 
@@ -644,23 +661,7 @@ class JetpackTableHandler(SitemapHandler):
                 logger.error(f"Error processing Jetpack sitemap {sitemap_url}: {e}")
         
         return urls
-    
-    def _extract_date_from_url(self, url: str) -> Optional[datetime]:
-        """Extract date from URL path like /2025/06/03/"""
-        try:
-            # Look for pattern like /YYYY/MM/DD/ in URL
-            import re
-            pattern = r'/(\d{4})/(\d{2})/(\d{2})/'
-            match = re.search(pattern, url)
-            
-            if match:
-                year, month, day = match.groups()
-                return datetime(int(year), int(month), int(day))
-            
-            return None
-        except Exception as e:
-            logger.warning(f"Could not extract date from URL {url}: {e}")
-            return None
+
     
     def _filter_by_date(self, all_urls: List[Tuple[str, str, datetime]], source_config: Dict) -> List[Tuple[str, str, datetime]]:
         """Filter URLs by date, keeping only recent ones"""
@@ -1936,18 +1937,27 @@ class NewsScraperStandalone:
             
             # Parse publication date
             try:
-                if article_data.get('pub_date'):
+                if article_data.get('pub_date', ''):
                     # Handle different date formats
-                    pub_date_str = article_data['pub_date']
+                    pub_date_str = article_data.get('pub_date', '')
                     if 'T' in pub_date_str:
-                        pub_date = datetime.fromisoformat(pub_date_str.replace('Z', ''))
+                        pub_date = datetime.fromisoformat(pub_date_str.replace('Z', '')).replace(tzinfo=None)
                     else:
                         pub_date = datetime.strptime(pub_date_str, '%Y-%m-%d %H:%M:%S')
                 else:
+                    date_from_url = extract_date_from_url(article_data.get('article_link', ''))
+                    if date_from_url:
+                        pub_date = date_from_url
+                    else:
+                        pub_date = datetime.now()
+            except (ValueError, TypeError) as e:
+                date_from_url = extract_date_from_url(article_data.get('article_link', ''))
+                if date_from_url:
+                    pub_date = date_from_url
+                else:
                     pub_date = datetime.now()
-            except (ValueError, TypeError):
-                pub_date = datetime.now()
-                logger.warning(f"Could not parse pub_date, using current time: {pub_date}")
+                logger.error(e)
+                logger.warning(f"Could not parse pub_date, using: {pub_date}")
             
             # Create NewsArticle instance
             news_article = NewsArticle(
