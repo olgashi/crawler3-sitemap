@@ -249,24 +249,98 @@ class SitemapHandler:
     def get_article_urls(self, source_config: Dict) -> List[Tuple[str, str]]:
         """Get article URLs and their last modified dates"""
         raise NotImplementedError
-    def _fetch_with_fallback(self, url: str, timeout: int = 30) -> requests.Response:
-        """Fetch URL with proxy fallback"""
+    
+    def _fetch_with_browser(self, url: str, timeout: int = 30) -> str:
+        """Fetch URL using browser automation as fallback for strict bot detection"""
         try:
-            # Try with proxy first
-            response = self.session.get(url, timeout=timeout)
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+            
+            logger.info(f"Using browser automation for: {url}")
+            
+            # Configure Chrome options for headless browsing
+            chrome_options = Options()
+            chrome_options.add_argument('--headless')  # Run in background
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36')
+            
+            driver = webdriver.Chrome(options=chrome_options)
+            driver.set_page_load_timeout(timeout)
+            
+            try:
+                # Navigate to the URL
+                driver.get(url)
+                
+                # Wait for page to load and check for Cloudflare challenge
+                WebDriverWait(driver, 10).until(
+                    lambda d: d.execute_script('return document.readyState') == 'complete'
+                )
+                
+                # Additional wait for potential Cloudflare challenges
+                time.sleep(3)
+                
+                # Get page content
+                page_source = driver.page_source
+                logger.info(f"Successfully fetched {len(page_source)} chars via browser automation")
+                
+                return page_source
+                
+            finally:
+                driver.quit()
+                
+        except ImportError:
+            logger.error("Selenium not installed. Install with: pip install selenium")
+            raise
+        except Exception as e:
+            logger.error(f"Browser automation failed for {url}: {e}")
+            raise
+    def _fetch_with_fallback(self, url: str, timeout: int = 30) -> requests.Response:
+        """Fetch URL with proxy fallback and enhanced headers for strict sites"""
+        
+        # Enhanced headers to avoid bot detection (removed Accept-Encoding to prevent compression issues)
+        enhanced_headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        }
+        
+        # Add small delay to be respectful to servers
+        time.sleep(1)
+        
+        try:
+            # Try with proxy first, using enhanced headers and shorter timeout for hanging sites
+            response = self.session.get(url, timeout=15, headers=enhanced_headers)
             response.raise_for_status()
             return response
         except (requests.exceptions.SSLError, requests.exceptions.ProxyError, 
-                requests.exceptions.ConnectionError) as e:
-            logger.warning(f"Proxy failed for {url}: {e}")
+                requests.exceptions.ConnectionError, requests.exceptions.HTTPError, 
+                requests.exceptions.ReadTimeout) as e:
+            logger.warning(f"Request failed for {url}: {e}")
             logger.info(f"Retrying without proxy...")
+            
+            # Add slightly longer delay before retry
+            time.sleep(2)
             
             # Create session without proxy
             fallback_session = requests.Session()
-            fallback_session.headers.update(self.session.headers)
+            fallback_session.headers.update(enhanced_headers)
             fallback_session.verify = False
             
-            response = fallback_session.get(url, timeout=timeout)
+            response = fallback_session.get(url, timeout=15)
             response.raise_for_status()
             return response
 
@@ -280,10 +354,46 @@ class StandardSitemapHandler(SitemapHandler):
         for sitemap_url in source_config.get('sitemap_urls', []):
             try:
                 logger.info(f"Fetching sitemap: {sitemap_url}")
-                response = self.session.get(sitemap_url, timeout=PROXY_TIMEOUT)
-                response.raise_for_status()
                 
-                root = ET.fromstring(response.content)
+                # Use enhanced headers matching real browser exactly
+                enhanced_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                    'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br, zstd',
+                    'Referer': 'https://www.google.com/',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'cross-site',
+                    'Sec-Fetch-User': '?1',
+                    'Sec-CH-UA': '"Not;A=Brand";v="99", "Google Chrome";v="139", "Chromium";v="139"',
+                    'Sec-CH-UA-Mobile': '?0',
+                    'Sec-CH-UA-Platform': '"macOS"',
+                    'Sec-CH-UA-Arch': '"arm"',
+                    'Sec-CH-UA-Bitness': '"64"',
+                    'Sec-CH-UA-Full-Version': '"139.0.7258.155"',
+                    'Sec-CH-UA-Platform-Version': '"14.6.1"',
+                    'Priority': 'u=0, i',
+                    'Cache-Control': 'max-age=0',
+                    # Add a basic cookie that might help with Cloudflare
+                    'Cookie': '_cfuvid=mFaD_ub.gdGKuTvbwPYKKgalJvgCly.DR_lmDLzuJDk-1756923014022-0.0.1.1-604800000; __cf_bm=FqbV7OLKSf0jPM3Gk3ITdZ.khKgSDBm.Ap4elLn6j4s-1756923013-1.0.1.1'
+                }
+                
+                try:
+                    response = self.session.get(sitemap_url, timeout=15, headers=enhanced_headers)
+                    response.raise_for_status()
+                    content = response.text
+                    logger.info("Successfully fetched with enhanced headers")
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 403:
+                        logger.warning("403 error with enhanced headers, trying browser automation...")
+                        content = self._fetch_with_browser(sitemap_url, timeout=30)
+                    else:
+                        raise
+                
+                root = ET.fromstring(content.encode('utf-8'))
                 namespaces = {'': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
                 
                 all_urls = []
@@ -362,25 +472,53 @@ class DateDynamicSitemapHandler(SitemapHandler):
         urls = []
         pattern = source_config.get('sitemap_pattern', '')
         fallback_months = source_config.get('fallback_months', 2)
+        fallback_days = source_config.get('fallback_days', 7)
         
         # Generate date parameters for sitemap fetching
         current_date = datetime.now().replace(tzinfo=None)
         dates_to_try = []
         
-        if HISTORICAL_MODE:
-            # For historical mode, go back 6 months
-            for i in range(6):
-                date = current_date - timedelta(days=30 * i)
-                dates_to_try.append(date.strftime('%Y_%m'))
+        # Check if this is a daily pattern (has {DD} placeholder)
+        is_daily_pattern = '{DD}' in pattern
+        
+        if is_daily_pattern:
+            # Daily pattern - use fallback_days
+            days_to_try = fallback_days if not HISTORICAL_MODE else 30
+            for i in range(days_to_try):
+                date = current_date - timedelta(days=i)
+                dates_to_try.append(date)
         else:
-            # For incremental mode, try current month and fallback months
-            for i in range(fallback_months + 1):
-                date = current_date - timedelta(days=30 * i)
-                dates_to_try.append(date.strftime('%Y_%m'))
+            # Monthly pattern - use existing logic
+            if HISTORICAL_MODE:
+                # For historical mode, go back 6 months
+                for i in range(6):
+                    date = current_date - timedelta(days=30 * i)
+                    dates_to_try.append(date)
+            else:
+                # For incremental mode, try current month and fallback months
+                for i in range(fallback_months + 1):
+                    date = current_date - timedelta(days=30 * i)
+                    dates_to_try.append(date)
         
         all_urls = []
-        for date_param in dates_to_try:
-            sitemap_url = pattern.format(YYYY_MM=date_param)
+        for date in dates_to_try:
+            # Support multiple date formats
+            if '{YYYY}' in pattern and '{MM}' in pattern and '{DD}' in pattern:
+                # Daily format: {YYYY}, {MM}, {DD}
+                sitemap_url = pattern.format(
+                    YYYY=date.strftime('%Y'),
+                    MM=date.strftime('%m'),
+                    DD=date.strftime('%d')
+                )
+            elif '{YYYY_MM}' in pattern:
+                # Monthly underscore format
+                sitemap_url = pattern.format(YYYY_MM=date.strftime('%Y_%m'))
+            elif '{YYYYMM}' in pattern:
+                # Monthly compact format
+                sitemap_url = pattern.format(YYYYMM=date.strftime('%Y%m'))
+            else:
+                # Fallback to underscore format
+                sitemap_url = pattern.format(YYYY_MM=date.strftime('%Y_%m'))
             
             try:
                 logger.info(f"Fetching dynamic sitemap: {sitemap_url}")
@@ -635,6 +773,399 @@ class CategoryPageHandler(SitemapHandler):
         
         return urls
 
+class IndexedPostSitemapHandler(SitemapHandler):
+    """Handler for sites with sitemap index containing post-sitemap{number}.xml files
+    
+    Designed for sites like Liberty Nation that organize content in numbered post sitemaps
+    (e.g., post-sitemap22.xml for August 2025, post-sitemap23.xml for September 2025).
+    Automatically finds the most recent post-sitemap based on lastmod date.
+    """
+    
+    def get_article_urls(self, source_config: Dict) -> List[Tuple[str, str]]:
+        """Extract URLs by finding the most recent post-sitemap from sitemap index"""
+        sitemap_index_url = source_config.get('sitemap_index_url')
+        if not sitemap_index_url:
+            logger.error("sitemap_index_url is required for indexed_post sitemap type")
+            return []
+        
+        try:
+            # Fetch sitemap index
+            logger.info(f"Fetching sitemap index: {sitemap_index_url}")
+            response = self._fetch_with_fallback(sitemap_index_url, timeout=PROXY_TIMEOUT)
+            
+            # Ensure response is properly decompressed - use .text instead of .content
+            response_text = response.text
+            content_preview = response_text[:500]
+            logger.info(f"Response preview: {content_preview}")
+            
+            # Check if response looks like HTML instead of XML
+            if '<html' in response_text.lower() or '<!doctype html' in response_text.lower():
+                logger.error(f"Received HTML instead of XML from {sitemap_index_url}")
+                logger.error(f"Response content preview: {content_preview}")
+                return []
+            
+            try:
+                root = ET.fromstring(response_text.encode('utf-8'))
+            except ET.ParseError as parse_e:
+                logger.error(f"XML parsing failed: {parse_e}")
+                logger.error(f"Response text (first 1000 chars): {response_text[:1000]}")
+                return []
+            
+            namespaces = {'': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            
+            # Find all post-sitemap{number}.xml entries
+            post_sitemaps = []
+            for sitemap_elem in root.findall('.//sitemap', namespaces):
+                loc_elem = sitemap_elem.find('loc', namespaces)
+                lastmod_elem = sitemap_elem.find('lastmod', namespaces)
+                
+                if loc_elem is not None:
+                    sitemap_url = loc_elem.text
+                    # Check if this is a post-sitemap with number
+                    if '/post-sitemap' in sitemap_url and sitemap_url.endswith('.xml'):
+                        # Extract number from URL like post-sitemap23.xml
+                        import re
+                        match = re.search(r'/post-sitemap(\d+)\.xml', sitemap_url)
+                        if match:
+                            number = int(match.group(1))
+                            lastmod = lastmod_elem.text if lastmod_elem is not None else None
+                            post_sitemaps.append((sitemap_url, lastmod, number))
+            
+            if not post_sitemaps:
+                logger.warning(f"No post-sitemap files found in {sitemap_index_url}")
+                return []
+            
+            # Sort by lastmod date (most recent first), fallback to number
+            def sort_key(item):
+                sitemap_url, lastmod, number = item
+                if lastmod:
+                    try:
+                        # Parse ISO datetime
+                        return datetime.fromisoformat(lastmod.replace('Z', '+00:00'))
+                    except:
+                        pass
+                # Fallback to number (higher number = more recent)
+                return datetime.min.replace(tzinfo=None) + timedelta(days=number)
+            
+            post_sitemaps.sort(key=sort_key, reverse=True)
+            
+            # Use the most recent sitemap
+            most_recent_sitemap = post_sitemaps[0][0]
+            logger.info(f"Using most recent post-sitemap: {most_recent_sitemap}")
+            
+            # Now extract URLs from this sitemap
+            response = self._fetch_with_fallback(most_recent_sitemap, timeout=PROXY_TIMEOUT)
+            root = ET.fromstring(response.text.encode('utf-8'))
+            
+            urls = []
+            for url_elem in root.findall('.//url', namespaces):
+                loc_elem = url_elem.find('loc', namespaces)
+                lastmod_elem = url_elem.find('lastmod', namespaces)
+                
+                if loc_elem is not None:
+                    url = loc_elem.text
+                    lastmod = lastmod_elem.text if lastmod_elem is not None else datetime.now().isoformat()
+                    urls.append((url, lastmod))
+            
+            logger.info(f"Found {len(urls)} URLs in most recent post-sitemap")
+            return urls
+            
+        except Exception as e:
+            logger.error(f"Error processing indexed post sitemap {sitemap_index_url}: {e}")
+            return []
+
+class IndexedDailySitemapHandler(SitemapHandler):
+    """Handler for sites with sitemap index containing daily sitemaps
+    
+    Designed for sites like Free Press Journal that organize content in daily sitemaps
+    (e.g., sitemap-daily-2025-09-03.xml). Automatically finds the most recent daily
+    sitemap based on lastmod date or date pattern.
+    """
+    
+    def get_article_urls(self, source_config: Dict) -> List[Tuple[str, str]]:
+        """Extract URLs by finding the most recent daily sitemap from sitemap index"""
+        sitemap_index_url = source_config.get('sitemap_index_url')
+        daily_pattern = source_config.get('daily_pattern', 'sitemap-daily-')
+        if not sitemap_index_url:
+            logger.error("sitemap_index_url is required for indexed_daily sitemap type")
+            return []
+        
+        try:
+            # Fetch sitemap index
+            logger.info(f"Fetching sitemap index: {sitemap_index_url}")
+            response = self._fetch_with_fallback(sitemap_index_url, timeout=PROXY_TIMEOUT)
+            
+            root = ET.fromstring(response.content)
+            namespaces = {'': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            
+            # Find all daily sitemap entries
+            daily_sitemaps = []
+            for sitemap_elem in root.findall('.//sitemap', namespaces):
+                loc_elem = sitemap_elem.find('loc', namespaces)
+                lastmod_elem = sitemap_elem.find('lastmod', namespaces)
+                
+                if loc_elem is not None:
+                    sitemap_url = loc_elem.text
+                    # Check if this is a daily sitemap - either pattern in URL or date parameters
+                    if (daily_pattern in sitemap_url and sitemap_url.endswith('.xml')) or \
+                       ('yyyy=' in sitemap_url and 'mm=' in sitemap_url and 'dd=' in sitemap_url):
+                        lastmod = lastmod_elem.text if lastmod_elem is not None else None
+                        daily_sitemaps.append((sitemap_url, lastmod))
+            
+            if not daily_sitemaps:
+                logger.warning(f"No daily sitemap files found in {sitemap_index_url}")
+                return []
+            
+            # Sort by lastmod date (most recent first)
+            def sort_key(item):
+                sitemap_url, lastmod = item
+                if lastmod:
+                    try:
+                        # Parse ISO datetime
+                        return datetime.fromisoformat(lastmod.replace('Z', '+00:00'))
+                    except:
+                        pass
+                # Fallback: try to extract date from URL
+                import re
+                # Try pattern like "sitemap-daily-2025-09-03.xml"
+                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', sitemap_url)
+                if date_match:
+                    try:
+                        return datetime.strptime(date_match.group(1), '%Y-%m-%d')
+                    except:
+                        pass
+                # Try URL parameters like "?yyyy=2025&mm=09&dd=03"
+                param_match = re.search(r'yyyy=(\d{4})&mm=(\d{2})&dd=(\d{2})', sitemap_url)
+                if param_match:
+                    try:
+                        year, month, day = param_match.groups()
+                        return datetime.strptime(f'{year}-{month}-{day}', '%Y-%m-%d')
+                    except:
+                        pass
+                return datetime.min
+            
+            daily_sitemaps.sort(key=sort_key, reverse=True)
+            
+            # Use the most recent sitemap(s) - get last few days for incremental mode
+            max_sitemaps = 3 if not HISTORICAL_MODE else 10
+            recent_sitemaps = daily_sitemaps[:max_sitemaps]
+            
+            all_urls = []
+            for sitemap_url, _ in recent_sitemaps:
+                logger.info(f"Fetching daily sitemap: {sitemap_url}")
+                try:
+                    response = self._fetch_with_fallback(sitemap_url, timeout=PROXY_TIMEOUT)
+                    root = ET.fromstring(response.content)
+                    
+                    urls = []
+                    for url_elem in root.findall('.//url', namespaces):
+                        loc_elem = url_elem.find('loc', namespaces)
+                        lastmod_elem = url_elem.find('lastmod', namespaces)
+                        
+                        if loc_elem is not None:
+                            url = loc_elem.text
+                            lastmod = lastmod_elem.text if lastmod_elem is not None else datetime.now().isoformat()
+                            urls.append((url, lastmod))
+                    
+                    all_urls.extend(urls)
+                    logger.info(f"Found {len(urls)} URLs in {sitemap_url}")
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching daily sitemap {sitemap_url}: {e}")
+                    continue
+            
+            logger.info(f"Total URLs found from daily sitemaps: {len(all_urls)}")
+            return all_urls
+            
+        except Exception as e:
+            logger.error(f"Error processing indexed daily sitemap {sitemap_index_url}: {e}")
+            return []
+
+class IndexedMonthlySitemapHandler(SitemapHandler):
+    """Handler for sites with sitemap index containing monthly post sitemaps
+    
+    Designed for sites like News India Times that organize content in monthly sitemaps
+    (e.g., sitemap-pt-post-2025-09.xml). Automatically finds the most recent monthly
+    sitemaps based on lastmod date or date pattern.
+    """
+    
+    def get_article_urls(self, source_config: Dict) -> List[Tuple[str, str]]:
+        """Extract URLs by finding recent monthly sitemaps from sitemap index"""
+        sitemap_index_url = source_config.get('sitemap_index_url')
+        monthly_pattern = source_config.get('monthly_pattern', 'sitemap-pt-post-')
+        if not sitemap_index_url:
+            logger.error("sitemap_index_url is required for indexed_monthly sitemap type")
+            return []
+        
+        try:
+            # Fetch sitemap index
+            logger.info(f"Fetching sitemap index: {sitemap_index_url}")
+            response = self._fetch_with_fallback(sitemap_index_url, timeout=PROXY_TIMEOUT)
+            
+            root = ET.fromstring(response.content)
+            namespaces = {'': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            
+            # Find all monthly sitemap entries
+            monthly_sitemaps = []
+            for sitemap_elem in root.findall('.//sitemap', namespaces):
+                loc_elem = sitemap_elem.find('loc', namespaces)
+                lastmod_elem = sitemap_elem.find('lastmod', namespaces)
+                
+                if loc_elem is not None:
+                    sitemap_url = loc_elem.text
+                    # Check if this is a monthly post sitemap
+                    if monthly_pattern in sitemap_url and sitemap_url.endswith('.xml'):
+                        lastmod = lastmod_elem.text if lastmod_elem is not None else None
+                        monthly_sitemaps.append((sitemap_url, lastmod))
+            
+            if not monthly_sitemaps:
+                logger.warning(f"No monthly sitemap files found in {sitemap_index_url}")
+                return []
+            
+            # Sort by lastmod date (most recent first)
+            def sort_key(item):
+                sitemap_url, lastmod = item
+                if lastmod:
+                    try:
+                        # Parse ISO datetime
+                        return datetime.fromisoformat(lastmod.replace('Z', '+00:00'))
+                    except:
+                        pass
+                # Fallback: try to extract date from URL
+                import re
+                # Try pattern like "sitemap-pt-post-2025-09.xml"
+                date_match = re.search(r'(\d{4}-\d{2})\.xml', sitemap_url)
+                if date_match:
+                    try:
+                        return datetime.strptime(date_match.group(1), '%Y-%m')
+                    except:
+                        pass
+                return datetime.min
+            
+            monthly_sitemaps.sort(key=sort_key, reverse=True)
+            
+            # Use the most recent sitemap(s) - get current and previous month
+            max_sitemaps = 2 if not HISTORICAL_MODE else 6
+            recent_sitemaps = monthly_sitemaps[:max_sitemaps]
+            
+            all_urls = []
+            for sitemap_url, _ in recent_sitemaps:
+                logger.info(f"Fetching monthly sitemap: {sitemap_url}")
+                try:
+                    response = self._fetch_with_fallback(sitemap_url, timeout=PROXY_TIMEOUT)
+                    root = ET.fromstring(response.content)
+                    
+                    urls = []
+                    for url_elem in root.findall('.//url', namespaces):
+                        loc_elem = url_elem.find('loc', namespaces)
+                        lastmod_elem = url_elem.find('lastmod', namespaces)
+                        
+                        if loc_elem is not None:
+                            url = loc_elem.text
+                            lastmod = lastmod_elem.text if lastmod_elem is not None else datetime.now().isoformat()
+                            urls.append((url, lastmod))
+                    
+                    all_urls.extend(urls)
+                    logger.info(f"Found {len(urls)} URLs in {sitemap_url}")
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching monthly sitemap {sitemap_url}: {e}")
+                    continue
+            
+            logger.info(f"Total URLs found from monthly sitemaps: {len(all_urls)}")
+            return all_urls
+            
+        except Exception as e:
+            logger.error(f"Error processing indexed monthly sitemap {sitemap_index_url}: {e}")
+            return []
+
+class HtmlDailySitemapHandler(SitemapHandler):
+    """Handler for HTML-based daily sitemap pages
+    
+    Designed for sites like NewsNation that organize sitemaps as HTML pages by date
+    with patterns like /sitemap/{YYYY}/{MONTH_NAME}/{DD}/
+    """
+    
+    def get_article_urls(self, source_config: Dict) -> List[Tuple[str, str]]:
+        """Extract URLs from HTML daily sitemap pages"""
+        pattern = source_config.get('sitemap_pattern', '')
+        fallback_days = source_config.get('fallback_days', 7)
+        
+        if not pattern:
+            logger.error("sitemap_pattern is required for html_daily sitemap type")
+            return []
+        
+        # Generate dates to try
+        current_date = datetime.now().replace(tzinfo=None)
+        days_to_try = fallback_days if not HISTORICAL_MODE else 30
+        
+        all_urls = []
+        for i in range(days_to_try):
+            date = current_date - timedelta(days=i)
+            
+            # Format the sitemap URL with date components
+            sitemap_url = pattern.format(
+                YYYY=date.strftime('%Y'),
+                MONTH_NAME=date.strftime('%B'),  # Full month name (September)
+                DD=str(date.day)  # Day without leading zero
+            )
+            
+            try:
+                logger.info(f"Fetching HTML sitemap: {sitemap_url}")
+                
+                # Use enhanced headers to avoid bot detection
+                enhanced_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'DNT': '1',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                }
+                
+                response = self.session.get(sitemap_url, timeout=PROXY_TIMEOUT, headers=enhanced_headers)
+                response.raise_for_status()
+                
+                # Parse HTML to extract article links
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Look for article links - try common patterns
+                article_links = []
+                
+                # Try different link selectors
+                link_selectors = [
+                    'a[href*="/2024/"], a[href*="/2025/"]',  # Links with year in URL
+                    'a[href^="/"]',  # All relative links
+                    'a[href*="newsnationnow.com"]',  # Full domain links
+                ]
+                
+                for selector in link_selectors:
+                    links = soup.select(selector)
+                    if links:
+                        for link in links:
+                            href = link.get('href', '')
+                            if href and ('article' in href.lower() or len(href.split('/')) > 3):
+                                # Convert relative URLs to absolute
+                                if href.startswith('/'):
+                                    href = f"https://www.newsnationnow.com{href}"
+                                
+                                article_links.append((href, date.isoformat()))
+                        break  # Use first selector that finds links
+                
+                if article_links:
+                    logger.info(f"Found {len(article_links)} URLs in HTML sitemap for {date.date()}")
+                    all_urls.extend(article_links)
+                else:
+                    logger.warning(f"No article links found in HTML sitemap for {date.date()}")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to fetch HTML sitemap {sitemap_url}: {e}")
+                continue
+        
+        logger.info(f"Total URLs found across all HTML sitemaps: {len(all_urls)}")
+        return all_urls
+
 class SitemapHandlerFactory:
     """Factory for creating appropriate sitemap handlers"""
     
@@ -645,7 +1176,11 @@ class SitemapHandlerFactory:
             'standard': StandardSitemapHandler,
             'date_dynamic': DateDynamicSitemapHandler,
             'jetpack_table': JetpackTableHandler,
-            'category_pages': CategoryPageHandler
+            'category_pages': CategoryPageHandler,
+            'indexed_post': IndexedPostSitemapHandler,
+            'indexed_daily': IndexedDailySitemapHandler,
+            'indexed_monthly': IndexedMonthlySitemapHandler,
+            'html_daily': HtmlDailySitemapHandler
         }
         
         handler_class = handlers.get(sitemap_type)
@@ -660,6 +1195,47 @@ class ContentExtractor:
     def __init__(self, session: requests.Session = None):
         self.session = session or requests.Session()
         self.failed_domains = set()
+    
+    def _fetch_with_browser_content(self, url: str, timeout: int = 30) -> str:
+        """Fetch URL using browser automation for content extraction"""
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+            from selenium.webdriver.support.ui import WebDriverWait
+            
+            logger.info(f"Using browser automation for content: {url}")
+            
+            chrome_options = Options()
+            chrome_options.add_argument('--headless')
+            chrome_options.add_argument('--no-sandbox')
+            chrome_options.add_argument('--disable-dev-shm-usage')
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--window-size=1920,1080')
+            chrome_options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36')
+            
+            driver = webdriver.Chrome(options=chrome_options)
+            driver.set_page_load_timeout(timeout)
+            
+            try:
+                driver.get(url)
+                WebDriverWait(driver, 10).until(
+                    lambda d: d.execute_script('return document.readyState') == 'complete'
+                )
+                time.sleep(3)  # Wait for any dynamic content
+                
+                page_source = driver.page_source
+                logger.info(f"Successfully fetched content via browser automation: {len(page_source)} chars. Head: {page_source[:500]}")
+                return page_source
+                
+            finally:
+                driver.quit()
+                
+        except ImportError:
+            logger.error("Selenium not installed. Install with: pip install selenium")
+            raise
+        except Exception as e:
+            logger.error(f"Browser automation failed for content {url}: {e}")
+            raise
 
 
     def _clean_promotional_content(self, content: str, title: str = None) -> str:
@@ -754,32 +1330,64 @@ class ContentExtractor:
         """Extract article content using trafilatura + newspaper3k for images"""
         try:
             import trafilatura
-            from newspaper import Article
-            from newspaper import Config
             
             logger.info(f"Extracting content from: {url}")
             
-            # Fetch the page
-            response = self.session.get(url, timeout=PROXY_TIMEOUT)
-            response.raise_for_status()
+            # Fetch the page with enhanced headers to avoid 403 errors
+            enhanced_headers = {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0',
+            }
             
-            content = trafilatura.extract(response.text, 
+            # Try enhanced headers first, fallback to browser automation for 403 errors
+            try:
+                response = self.session.get(url, timeout=PROXY_TIMEOUT, headers=enhanced_headers)
+                response.raise_for_status()
+                page_content = response.text
+                logger.info("Successfully fetched content with enhanced headers")
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 403:
+                    logger.warning("403 error with enhanced headers, trying browser automation for content...")
+                    # We need the browser automation method here - let's import it
+                    page_content = self._fetch_with_browser_content(url)
+                else:
+                    raise
+            
+            content = trafilatura.extract(page_content, 
                                         include_comments=False,
                                         include_tables=True,
                                         include_formatting=False,
                                         favor_precision=False)
             
             # Extract metadata with trafilatura
-            metadata = trafilatura.extract_metadata(response.text)
+            metadata = trafilatura.extract_metadata(page_content)
             
-            # Extract images with newspaper3k (better image extraction)
+            # Try to extract images with newspaper3k (with conditional import)
+            main_image = None
+            all_images = []
+            title = metadata.title if metadata else ''
+            author = metadata.author if metadata else ''
+            
             try:
+                # Conditional import of newspaper3k
+                from newspaper import Article
+                from newspaper import Config
+                
                 config = Config()
                 config.browser_user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 config.fetch_images = True
                 
                 article = Article(url, config=config)
-                article.set_html(response.text)
+                article.set_html(page_content)
                 article.parse()
                 
                 # Get images from newspaper3k
@@ -793,19 +1401,35 @@ class ContentExtractor:
                 # There was a problem with extracting lead paragraph only in cash.ch
                 if 'www.cash.ch' in url or 'handelszeitung.ch' in url:
                     from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(response.text, 'html.parser')
+                    soup = BeautifulSoup(page_content, 'html.parser')
                     lead_content = self._extract_lead_content(soup)
                     
                     # Prepend lead if found and not already in content
                     if lead_content and lead_content not in content:
                         content = lead_content + "\n\n" + content
                 
+            except ImportError as e:
+                logger.warning(f"Newspaper3k not available: {e}. Using trafilatura metadata only.")
+                # Fallback: try basic image extraction with BeautifulSoup
+                try:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    
+                    # Find main image from common meta tags
+                    og_image = soup.find('meta', property='og:image')
+                    if og_image:
+                        main_image = og_image.get('content')
+                    
+                    # Find all images
+                    img_tags = soup.find_all('img', src=True)
+                    all_images = [img['src'] for img in img_tags if img.get('src')]
+                    
+                except Exception as bs_e:
+                    logger.warning(f"Fallback image extraction failed: {bs_e}")
+                    
             except Exception as e:
-                logger.warning(f"Newspaper3k image extraction failed: {e}")
-                main_image = None
-                all_images = []
-                title = metadata.title if metadata else ''
-                author = metadata.author if metadata else ''
+                logger.warning(f"Newspaper3k extraction failed: {e}")
+                # Already have fallback values set above
             
             if not content or len(content) < 200:
                 logger.warning(f"Content too short for {url}: {len(content) if content else 0} chars")
@@ -1128,16 +1752,18 @@ class NewsScraperStandalone:
     def __init__(self, config_path: str = 'config.json'):
         self.config_manager = ConfigManager(config_path)
         
-        # Create session with proxy if available
+        # Create session with proxy if available (skip proxy in TEST_MODE)
         self.session = requests.Session()
         proxy_ip = os.getenv('STORM_PROXY_IP')
-        if proxy_ip:
+        if proxy_ip and not TEST_MODE:
             proxy_dict = {
                 'http': f'http://{proxy_ip}',
                 'https': f'http://{proxy_ip}'
             }
             self.session.proxies.update(proxy_dict)
             logger.info(f"Using proxy: {proxy_ip}")
+        elif TEST_MODE:
+            logger.info("TEST_MODE enabled - skipping proxy configuration for local testing")
         
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -1392,15 +2018,17 @@ def main():
         # Interactive mode for testing
         scraper = NewsScraperStandalone()
         
-        print("\nChoose an option:")
-        print("1. Scrape a specific source")
-        print("2. Scrape all sources")
-        print("3. Test sitemap only (no content extraction)")
+        # print("\nChoose an option:")
+        # print("1. Scrape a specific source")
+        # print("2. Scrape all sources")
+        # print("3. Test sitemap only (no content extraction)")
         
-        choice = input("\nEnter choice (1-3): ").strip()
+        # choice = input("\nEnter choice (1-3): ").strip()
+        choice = '1'
         
         if choice == '1':
-            source_name = input("Enter source name: ").strip()
+            source_name = 'politico_com'
+            # source_name = input("Enter source name: ").strip()
             max_articles = input("Max articles (press Enter for all): ").strip()
             max_articles = int(max_articles) if max_articles else None
             
@@ -1413,15 +2041,17 @@ def main():
         
         elif choice == '2':
             shard_color = input("Enter shard color (default: red): ").strip() or 'red'
-            max_articles = input("Max articles per source (press Enter for all): ").strip()
-            max_articles = int(max_articles) if max_articles else None
+            # max_articles = input("Max articles per source (press Enter for all): ").strip()
+            # max_articles = int(max_articles) if max_articles else None
+            max_articles = 2
             
             results = scraper.scrape_all_sources(shard_color, max_articles)
             print(f"\n✅ Completed! Total extracted: {results['total_extracted']} articles")
         
         elif choice == '3':
             # Test sitemap only
-            source_name = input("Enter source name: ").strip()
+            # source_name = input("Enter source name: ").strip()
+            source_name = 'politico_com'
             source_config = scraper.config_manager.get_source_by_name(source_name)
             
             if source_config:
